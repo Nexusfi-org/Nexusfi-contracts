@@ -75,16 +75,14 @@ pub struct Fund {
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct IndexFundFactory {
-    pub owner_id: AccountId,
     pub funds: IterableMap<String, Fund>,
 }
 
 #[near_bindgen]
 impl IndexFundFactory {
     #[init]
-    pub fn new(owner_id: AccountId) -> Self {
+    pub fn new( -> Self {
         Self {
-            owner_id,
             funds: IterableMap::new(b"f"),
         }
     }
@@ -197,14 +195,5 @@ mod tests {
         let mut builder = VMContextBuilder::new();
         builder.predecessor_account_id(predecessor);
         builder
-    }
-
-    #[test]
-    fn test_new() {
-        let context = get_context(accounts(1));
-        testing_env!(context.build());
-
-        let contract = IndexFundFactory::new(accounts(1));
-        assert_eq!(contract.owner_id, accounts(1));
     }
 }
