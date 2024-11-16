@@ -87,16 +87,18 @@ pub struct IndexFundFactory {
     pub owner_id: AccountId,
     pub funds: IterableMap<String, Fund>,
     pub fund_creation_deposit: NearToken,
+    pub usdc_contract: AccountId,  // Added this field
 }
 
 #[near_bindgen]
 impl IndexFundFactory {
     #[init]
-    pub fn new(owner_id: AccountId, fund_creation_deposit: NearToken) -> Self {
+    pub fn new(owner_id: AccountId, fund_creation_deposit: NearToken, usdc_contract: AccountId) -> Self {
         Self {
             owner_id,
             funds: IterableMap::new(b"f"),
             fund_creation_deposit,
+            usdc_contract,
         }
     }
 
@@ -121,23 +123,17 @@ impl IndexFundFactory {
 
         // Generate unique subaccount name
         let subaccount_id = format!("{}.{}", prefix, env::current_account_id());
+        let subaccount = subaccount_id.parse::<AccountId>().unwrap();
 
-        // Calculate storage and code costs
-        let contract_bytes = DEFAULT_TOKEN_WASM.len() as u128;
-        let storage_cost = NEAR_PER_STORAGE.saturating_mul(contract_bytes);
-        let minimum_needed = storage_cost.saturating_add(NearToken::from_millinear(100));
-
-        assert!(
-            deposit >= minimum_needed,
-            "Attach at least {minimum_needed} yⓃ"
-        );
-
-        let init_args =
-            near_sdk::serde_json::to_vec(&(env::predecessor_account_id(), metadata.assets.clone()))
-                .expect("Failed to serialize init args");
+        // Prepare init arguments for the token contract
+        let init_args = near_sdk::serde_json::to_vec(&(
+            env::predecessor_account_id(), // owner_id
+            metadata.assets.clone(),       // assets
+            self.usdc_contract.clone(),    // usdc_contract
+        )).expect("Failed to serialize init args");
 
         // Deploy the fund token contract
-        let mut promise = Promise::new(subaccount_id.parse().unwrap())
+        let mut promise = Promise::new(subaccount.clone())
             .create_account()
             .transfer(deposit)
             .deploy_contract(DEFAULT_TOKEN_WASM.to_vec())
@@ -145,7 +141,7 @@ impl IndexFundFactory {
                 "new".to_string(),
                 init_args,
                 NO_DEPOSIT,
-                TGAS.saturating_mul(5),
+                Gas::from_tgas(50),
             );
 
         // Add full access key if provided
@@ -155,11 +151,13 @@ impl IndexFundFactory {
 
         // Add callback
         promise.then(
-            Self::ext(env::current_account_id()).on_fund_created_callback(
-                prefix.clone(),
-                metadata.clone(),
-                subaccount_id.clone(), // Use String
-            ),
+            Self::ext(env::current_account_id())
+                .with_static_gas(Gas::from_tgas(10))
+                .on_fund_created_callback(
+                    prefix,
+                    metadata,
+                    subaccount.to_string(),
+                )
         )
     }
 
@@ -169,19 +167,19 @@ impl IndexFundFactory {
         &mut self,
         prefix: String,
         metadata: FundMetadata,
-        token_address: String, // Use String
+        token_address: String,
         #[callback_result] result: Result<(), PromiseError>,
     ) -> bool {
-        if let Ok(_) = result {
+        if result.is_ok() {
             let fund = Fund {
                 metadata,
                 token_address: token_address.clone(),
-                total_supply: U128Json::from(U128(0)), // Use the U128Json wrapper.
+                total_supply: U128Json::from(U128(0)),
                 creation_timestamp: env::block_timestamp(),
             };
 
-            self.funds.insert(prefix.clone(), fund); // Clone `prefix` for insertion
-            log!("Successfully created fund at {}", token_address); // No need to clone again
+            self.funds.insert(prefix.clone(), fund);
+            log!("Successfully created fund at {}", token_address);
 
             true
         } else {
@@ -206,5 +204,33 @@ impl IndexFundFactory {
             .iter()
             .map(|key| ((*key).clone(), self.funds.get(*key).unwrap().clone()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_sdk::test_utils::{accounts, VMContextBuilder};
+    use near_sdk::testing_env;
+
+    fn get_context(predecessor: AccountId) -> VMContextBuilder {
+        let mut builder = VMContextBuilder::new();
+        builder.predecessor_account_id(predecessor);
+        builder
+    }
+
+    #[test]
+    fn test_new() {
+        let context = get_context(accounts(1));
+        testing_env!(context.build());
+
+        let contract = IndexFundFactory::new(
+            accounts(1),
+            NearToken::from_near(10), // 10 NEAR deposit
+            accounts(2),  // USDC contract address
+        );
+        
+        assert_eq!(contract.owner_id, accounts(1));
+        assert_eq!(contract.usdc_contract, accounts(2));
     }
 }
