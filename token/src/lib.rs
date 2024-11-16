@@ -14,6 +14,16 @@ use near_sdk::{
     PromiseError,
 };
 use std::collections::HashMap;
+use once_cell::sync::Lazy;
+
+
+pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert("0xe09D8aDae1141181f4CddddeF97E4Cf68f5436E6", "aurora.fakes.testnet");
+    m.insert("0x2e5221B0f855Be4ea5Cefffb8311EED0563B6e87", "weth.fakes.testnet");
+    m.insert("0xf08a50178dfcde18524640ea6618a1f965821715", "usdc.fakes.testnet");
+    m
+});
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -56,10 +66,16 @@ pub struct Contract {
     pub oracle_contract: AccountId,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct WithdrawRequest {
+    pub derived_addresses: HashMap<String, AccountId>,  // token_name -> derived_address
+}
+
 #[near_bindgen]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>, usdc_contract: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>) -> Self {
         assert!(!env::state_exists(), "Contract is already initialized");
         let total_weight: u8 = assets.iter().map(|a| a.weight).sum();
         assert_eq!(total_weight, 100, "Total weight of assets must equal 100%");
@@ -69,7 +85,7 @@ impl Contract {
             assets,
             owner_id,
             user_balances: HashMap::new(),
-            usdc_contract,
+            usdc_contract: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse().unwrap(),
             oracle_contract: "priceoracle.testnet".parse().unwrap(),
         }
     }
