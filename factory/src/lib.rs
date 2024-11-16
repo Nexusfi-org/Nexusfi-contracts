@@ -22,7 +22,7 @@ pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     m
 });
 
-#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct U128Json {
     value: u128,
@@ -55,7 +55,7 @@ impl BorshDeserialize for U128Json {
     }
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct FundMetadata {
     pub name: String,
@@ -64,7 +64,7 @@ pub struct FundMetadata {
     pub assets: Vec<AssetInfo>,
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct AssetInfo {
     pub name: String,
@@ -72,7 +72,7 @@ pub struct AssetInfo {
     pub weight: u8,
 }
 
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Fund {
     pub metadata: FundMetadata,
@@ -109,14 +109,19 @@ impl IndexFundFactory {
         let subaccount_id = format!("{}.{}", prefix, env::current_account_id());
         let subaccount = subaccount_id.parse::<AccountId>().unwrap();
 
-        let init_args = near_sdk::serde_json::to_vec(&(
+        let args = (
             env::predecessor_account_id(),
             metadata.assets.clone(),
             "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(),
-        )).expect("Failed to serialize init args");
+        );
+    
+        log!("Creating fund with args: {:?}", args);
+    
+        let init_args = near_sdk::serde_json::to_vec(&args)
+            .expect("Failed to serialize init args");
 
         let deposit = env::attached_deposit();
-        
+
         let mut promise = Promise::new(subaccount.clone())
             .create_account()
             .transfer(deposit)
