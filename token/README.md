@@ -1,6 +1,6 @@
-# token
+# Token Contract
 
-cargo-near-new-project-description
+This is the base Token Contract that will give out a liquidty token, in-exchange when the user deposits USDC in the index fund.
 
 ## How to Build Locally?
 
