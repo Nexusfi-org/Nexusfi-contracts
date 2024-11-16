@@ -7,10 +7,10 @@ use near_sdk::{env, log, near_bindgen, AccountId, NearToken, PanicOnDefault, Pro
 const TGAS: Gas = Gas::from_tgas(1);
 const NO_DEPOSIT: NearToken = NearToken::from_near(0); // 0 yⓃ
 const NEAR_PER_STORAGE: NearToken = NearToken::from_yoctonear(10u128.pow(19)); // 10 NEAR
-const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./tokenf/token.wasm");
+const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./token/token.wasm");
 
 /// Metadata for an index fund
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct FundMetadata {
     pub name: String,
@@ -20,7 +20,7 @@ pub struct FundMetadata {
 }
 
 /// Metadata for individual assets in an index fund
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct AssetInfo {
     pub name: String,
@@ -29,7 +29,7 @@ pub struct AssetInfo {
 }
 
 /// Information about a deployed fund
-#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Fund {
     pub metadata: FundMetadata,
@@ -84,7 +84,7 @@ impl IndexFundFactory {
         let contract_bytes = DEFAULT_TOKEN_WASM.len() as u128;
         let storage_cost = NEAR_PER_STORAGE.saturating_mul(contract_bytes);
         let minimum_needed = storage_cost.saturating_add(NearToken::from_millinear(100));
-        
+
         assert!(deposit >= minimum_needed, "Attach at least {minimum_needed} yⓃ");
 
         let init_args = near_sdk::serde_json::to_vec(&(env::predecessor_account_id(), metadata.assets))
@@ -107,7 +107,7 @@ impl IndexFundFactory {
             Self::ext(env::current_account_id()).on_fund_created_callback(
                 prefix.clone(),
                 metadata.clone(),
-                subaccount_id,
+                subaccount_id.parse().unwrap(),
             ),
         )
     }
