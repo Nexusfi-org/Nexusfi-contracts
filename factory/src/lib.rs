@@ -6,22 +6,19 @@ use near_sdk::{
     env, log, near_bindgen, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
     PublicKey,
 };
-use schemars::JsonSchema; // Import JsonSchema for schema generation.
+use schemars::JsonSchema;
 
 const TGAS: Gas = Gas::from_tgas(1);
-const NO_DEPOSIT: NearToken = NearToken::from_near(0); // 0 yⓃ
-const NEAR_PER_STORAGE: NearToken = NearToken::from_yoctonear(10u128.pow(19)); // 10 NEAR
+const NO_DEPOSIT: NearToken = NearToken::from_near(0);
 const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./token/token.wasm");
 
-/// Wrapper type for U128 to support JsonSchema and Borsh
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct U128Json {
     value: u128,
-
 }
 
-// Conversion between `U128` and `U128Json`
+// Conversion implementations
 impl From<U128> for U128Json {
     fn from(u128_value: U128) -> Self {
         Self {
@@ -36,22 +33,19 @@ impl From<U128Json> for U128 {
     }
 }
 
-// Implement BorshSerialize and BorshDeserialize manually for U128Json
 impl BorshSerialize for U128Json {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        BorshSerialize::serialize(&self.value, writer) // Explicitly use `BorshSerialize`
+        BorshSerialize::serialize(&self.value, writer)
     }
 }
 
 impl BorshDeserialize for U128Json {
     fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let value = BorshDeserialize::deserialize_reader(reader)?; // Explicitly use `BorshDeserialize`
+        let value = BorshDeserialize::deserialize_reader(reader)?;
         Ok(Self { value })
     }
 }
 
-
-/// Metadata for an index fund
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct FundMetadata {
@@ -61,48 +55,40 @@ pub struct FundMetadata {
     pub assets: Vec<AssetInfo>,
 }
 
-/// Metadata for individual assets in an index fund
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct AssetInfo {
     pub name: String,
-    pub contract_address: String, // Use `String` for JsonSchema compatibility.
+    pub contract_address: String,
     pub weight: u8,
 }
 
-/// Information about a deployed fund
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(crate = "near_sdk::serde")]
 pub struct Fund {
     pub metadata: FundMetadata,
-    pub token_address: String, // Use `String` for JsonSchema compatibility.
-    pub total_supply: U128Json, // Use the custom wrapper for U128.
+    pub token_address: String,
+    pub total_supply: U128Json,
     pub creation_timestamp: u64,
 }
 
-/// The IndexFundFactory contract
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct IndexFundFactory {
     pub owner_id: AccountId,
     pub funds: IterableMap<String, Fund>,
-    pub fund_creation_deposit: NearToken,
-    pub usdc_contract: AccountId,  // Added this field
 }
 
 #[near_bindgen]
 impl IndexFundFactory {
     #[init]
-    pub fn new(owner_id: AccountId, fund_creation_deposit: NearToken, usdc_contract: AccountId) -> Self {
+    pub fn new(owner_id: AccountId) -> Self {
         Self {
             owner_id,
             funds: IterableMap::new(b"f"),
-            fund_creation_deposit,
-            usdc_contract,
         }
     }
 
-    /// Deploy a new fund as a subaccount
     #[payable]
     pub fn create_fund(
         &mut self,
@@ -110,13 +96,6 @@ impl IndexFundFactory {
         metadata: FundMetadata,
         public_key: Option<PublicKey>,
     ) -> Promise {
-        // Validate deposit
-        let deposit = env::attached_deposit();
-        assert!(
-            deposit >= self.fund_creation_deposit,
-            "Insufficient deposit for fund creation"
-        );
-
         // Validate total weight is 100%
         let total_weight: u8 = metadata.assets.iter().map(|a| a.weight).sum();
         assert_eq!(total_weight, 100, "Total weight must be 100%");
@@ -129,9 +108,11 @@ impl IndexFundFactory {
         let init_args = near_sdk::serde_json::to_vec(&(
             env::predecessor_account_id(), // owner_id
             metadata.assets.clone(),       // assets
-            self.usdc_contract.clone(),    // usdc_contract
+            "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(), // hardcoded USDC contract
         )).expect("Failed to serialize init args");
 
+        let deposit = env::attached_deposit();
+        
         // Deploy the fund token contract
         let mut promise = Promise::new(subaccount.clone())
             .create_account()
@@ -161,7 +142,6 @@ impl IndexFundFactory {
         )
     }
 
-    /// Callback to finalize fund creation
     #[private]
     pub fn on_fund_created_callback(
         &mut self,
@@ -224,13 +204,7 @@ mod tests {
         let context = get_context(accounts(1));
         testing_env!(context.build());
 
-        let contract = IndexFundFactory::new(
-            accounts(1),
-            NearToken::from_near(10), // 10 NEAR deposit
-            accounts(2),  // USDC contract address
-        );
-        
+        let contract = IndexFundFactory::new(accounts(1));
         assert_eq!(contract.owner_id, accounts(1));
-        assert_eq!(contract.usdc_contract, accounts(2));
     }
 }

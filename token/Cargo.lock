@@ -3380,6 +3380,7 @@ dependencies = [
  "near-contract-standards",
  "near-sdk",
  "near-workspaces",
+ "once_cell",
  "serde_json",
  "tokio",
 ]
