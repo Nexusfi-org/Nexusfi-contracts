@@ -7,7 +7,7 @@ use near_sdk::{env, log, near_bindgen, AccountId, NearToken, PanicOnDefault, Pro
 const TGAS: Gas = Gas::from_tgas(1);
 const NO_DEPOSIT: NearToken = NearToken::from_near(0); // 0 yⓃ
 const NEAR_PER_STORAGE: NearToken = NearToken::from_yoctonear(10u128.pow(19)); // 10 NEAR
-const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./wasm/token.wasm");
+const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./tokenf/token.wasm");
 
 /// Metadata for an index fund
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
@@ -83,7 +83,8 @@ impl IndexFundFactory {
         // Calculate storage and code costs
         let contract_bytes = DEFAULT_TOKEN_WASM.len() as u128;
         let storage_cost = NEAR_PER_STORAGE.saturating_mul(contract_bytes);
-        let minimum_needed = storage_cost + NearToken::from_millinear(100);
+        let minimum_needed = storage_cost.saturating_add(NearToken::from_millinear(100));
+        
         assert!(deposit >= minimum_needed, "Attach at least {minimum_needed} yⓃ");
 
         let init_args = near_sdk::serde_json::to_vec(&(env::predecessor_account_id(), metadata.assets))
