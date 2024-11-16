@@ -106,7 +106,6 @@ impl IndexFundFactory {
         let init_args = near_sdk::serde_json::to_vec(&(
             env::predecessor_account_id(), // owner_id
             metadata.assets.clone(),       // assets
-            "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(), // hardcoded USDC contract
         )).expect("Failed to serialize init args");
 
         let deposit = env::attached_deposit();
@@ -117,7 +116,7 @@ impl IndexFundFactory {
             .transfer(deposit)
             .deploy_contract(DEFAULT_TOKEN_WASM.to_vec())
             .function_call(
-                "new".to_string(),
+                "new".to_owned(),
                 init_args,
                 NO_DEPOSIT,
                 Gas::from_tgas(50),
