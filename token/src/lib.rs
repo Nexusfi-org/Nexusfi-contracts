@@ -2,7 +2,17 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
-use near_sdk::{env, near_bindgen, AccountId, PanicOnDefault, Promise, PromiseOrValue, NearToken, Gas};
+use near_sdk::{
+    env, 
+    near_bindgen, 
+    AccountId, 
+    PanicOnDefault, 
+    Promise, 
+    PromiseOrValue, 
+    NearToken, 
+    Gas,
+    PromiseError,
+};
 use std::collections::HashMap;
 
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
@@ -13,6 +23,28 @@ pub struct AssetInfo {
     pub weight: u8,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct PriceData {
+    pub multiplier: String,
+    pub decimals: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct AssetPrice {
+    pub asset_id: String,
+    pub price: Option<PriceData>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct OraclePriceData {
+    pub timestamp: String,
+    pub recency_duration_sec: u64,
+    pub prices: Vec<AssetPrice>,
+}
+
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct Contract {
@@ -21,6 +53,7 @@ pub struct Contract {
     pub owner_id: AccountId,
     pub user_balances: HashMap<AccountId, HashMap<String, U128>>,
     pub usdc_contract: AccountId,
+    pub oracle_contract: AccountId,
 }
 
 #[near_bindgen]
@@ -37,6 +70,7 @@ impl Contract {
             owner_id,
             user_balances: HashMap::new(),
             usdc_contract,
+            oracle_contract: "priceoracle.testnet".parse().unwrap(),
         }
     }
 
@@ -56,31 +90,106 @@ impl Contract {
         self.user_balances.get(account_id)
     }
 
-    fn get_asset_prices(&self) -> HashMap<String, f64> {
-        env::log_str("Fetching asset prices... (placeholder)");
-        self.assets
-            .iter()
-            .map(|asset| (asset.name.clone(), 1.0))
-            .collect()
+    pub fn get_asset_prices(&self) -> Promise {
+        Promise::new(self.oracle_contract.clone())
+            .function_call(
+                "get_price_data".to_string(),
+                Vec::new(),
+                NearToken::from_near(0),
+                Gas::from_tgas(100)
+            )
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(50))
+                    .get_asset_prices_callback()
+            )
+    }
+
+    #[private]
+    pub fn get_asset_prices_callback(
+        &self,
+        #[callback_result] call_result: Result<OraclePriceData, PromiseError>,
+    ) -> HashMap<String, (u128, u32)> {
+        let prices = match call_result {
+            Ok(data) => data,
+            Err(_) => env::panic_str("Failed to fetch price data from oracle"),
+        };
+
+        // Verify price data is not too old
+        let timestamp = prices.timestamp.parse::<u64>().unwrap_or(0);
+        let current_time = env::block_timestamp();
+        assert!(
+            current_time - timestamp < prices.recency_duration_sec * 1_000_000_000,
+            "Price data is too old"
+        );
+
+        // Create a map of asset prices
+        let mut asset_prices = HashMap::new();
+        for price_data in prices.prices {
+            if let Some(price) = price_data.price {
+                asset_prices.insert(
+                    price_data.asset_id,
+                    (
+                        price.multiplier.parse().unwrap_or(0),
+                        price.decimals
+                    )
+                );
+            }
+        }
+
+        // Map our assets to their prices
+        let mut result = HashMap::new();
+        for asset in &self.assets {
+            if let Some(&(multiplier, decimals)) = asset_prices.get(&asset.contract_address.to_string()) {
+                result.insert(asset.name.clone(), (multiplier, decimals));
+            } else {
+                env::log_str(&format!("No price found for asset: {}", asset.name));
+            }
+        }
+
+        result
     }
 
     #[private]
     pub fn process_deposit(&mut self, sender_id: AccountId, amount: U128) {
-        let asset_prices = self.get_asset_prices();
+        self.get_asset_prices()
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(50))
+                    .process_deposit_with_prices(sender_id, amount)
+            );
+    }
+
+    #[private]
+    pub fn process_deposit_with_prices(
+        &mut self,
+        sender_id: AccountId,
+        amount: U128,
+        #[callback_result] prices_result: Result<HashMap<String, (u128, u32)>, PromiseError>,
+    ) {
+        let asset_prices = match prices_result {
+            Ok(prices) => prices,
+            Err(_) => env::panic_str("Failed to fetch asset prices"),
+        };
+
         let user_balance = self
             .user_balances
             .entry(sender_id.clone())
             .or_insert_with(HashMap::new);
 
         for asset in &self.assets {
-            let price = asset_prices.get(&asset.name).expect("Missing asset price");
-            let weight_fraction = f64::from(asset.weight) / 100.0;
-            let asset_amount = (amount.0 as f64 * weight_fraction / price) as u128;
+            if let Some(&(multiplier, decimals)) = asset_prices.get(&asset.name) {
+                let price = (multiplier as f64) / 10_u64.pow(decimals) as f64;
+                let weight_fraction = f64::from(asset.weight) / 100.0;
+                let asset_amount = (amount.0 as f64 * weight_fraction / price) as u128;
 
-            user_balance
-                .entry(asset.name.clone())
-                .and_modify(|balance| *balance = U128(balance.0 + asset_amount))
-                .or_insert(U128(asset_amount));
+                user_balance
+                    .entry(asset.name.clone())
+                    .and_modify(|balance| *balance = U128(balance.0 + asset_amount))
+                    .or_insert(U128(asset_amount));
+            } else {
+                env::panic_str(&format!("No price available for asset: {}", asset.name));
+            }
         }
 
         env::log_str(&format!(
@@ -164,7 +273,7 @@ impl FungibleTokenReceiver for Contract {
             PromiseOrValue::Value(U128(0))
         } else {
             env::log_str(&format!("Unsupported message: {}", msg));
-            PromiseOrValue::Value(amount) // Refund if message is not empty
+            PromiseOrValue::Value(amount)
         }
     }
 }
