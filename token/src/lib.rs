@@ -16,7 +16,6 @@ use near_sdk::{
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
 
-
 pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     let mut m = HashMap::new();
     m.insert("0xe09D8aDae1141181f4CddddeF97E4Cf68f5436E6", "aurora.fakes.testnet");
@@ -29,7 +28,7 @@ pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 #[serde(crate = "near_sdk::serde")]
 pub struct AssetInfo {
     pub name: String,
-    pub contract_address: AccountId,
+    pub contract_address: String,
     pub weight: u8,
 }
 
@@ -66,16 +65,10 @@ pub struct Contract {
     pub oracle_contract: AccountId,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct WithdrawRequest {
-    pub derived_addresses: HashMap<String, AccountId>,  // token_name -> derived_address
-}
-
 #[near_bindgen]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>) -> Self {
+    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>, usdc_contract: AccountId) -> Self {
         assert!(!env::state_exists(), "Contract is already initialized");
         let total_weight: u8 = assets.iter().map(|a| a.weight).sum();
         assert_eq!(total_weight, 100, "Total weight of assets must equal 100%");
@@ -85,7 +78,7 @@ impl Contract {
             assets,
             owner_id,
             user_balances: HashMap::new(),
-            usdc_contract: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse().unwrap(),
+            usdc_contract,
             oracle_contract: "priceoracle.testnet".parse().unwrap(),
         }
     }
@@ -131,7 +124,6 @@ impl Contract {
             Err(_) => env::panic_str("Failed to fetch price data from oracle"),
         };
 
-        // Verify price data is not too old
         let timestamp = prices.timestamp.parse::<u64>().unwrap_or(0);
         let current_time = env::block_timestamp();
         assert!(
@@ -139,7 +131,6 @@ impl Contract {
             "Price data is too old"
         );
 
-        // Create a map of asset prices
         let mut asset_prices = HashMap::new();
         for price_data in prices.prices {
             if let Some(price) = price_data.price {
@@ -153,13 +144,12 @@ impl Contract {
             }
         }
 
-        // Map our assets to their prices
         let mut result = HashMap::new();
         for asset in &self.assets {
-            if let Some(&(multiplier, decimals)) = asset_prices.get(&asset.contract_address.to_string()) {
-                result.insert(asset.name.clone(), (multiplier, decimals));
-            } else {
-                env::log_str(&format!("No price found for asset: {}", asset.name));
+            if let Some(&near_address) = TOKEN_ADDRESSES.get(asset.contract_address.to_lowercase().as_str()) {
+                if let Some(&(multiplier, decimals)) = asset_prices.get(near_address) {
+                    result.insert(asset.contract_address.clone(), (multiplier, decimals));
+                }
             }
         }
 
@@ -194,19 +184,19 @@ impl Contract {
             .or_insert_with(HashMap::new);
 
         for asset in &self.assets {
-            if let Some(&(multiplier, decimals)) = asset_prices.get(&asset.name) {
+            if let Some(&(multiplier, decimals)) = asset_prices.get(&asset.contract_address) {
                 let price = (multiplier as f64) / 10_u64.pow(decimals) as f64;
                 let weight_fraction = f64::from(asset.weight) / 100.0;
                 let asset_amount = (amount.0 as f64 * weight_fraction / price) as u128;
 
                 user_balance
-                    .entry(asset.name.clone())
+                    .entry(asset.contract_address.clone())
                     .and_modify(|balance| *balance = U128(balance.0 + asset_amount))
                     .or_insert(U128(asset_amount));
-            } else {
-                env::panic_str(&format!("No price available for asset: {}", asset.name));
             }
         }
+
+        self.total_assets = U128(self.total_assets.0 + amount.0);
 
         env::log_str(&format!(
             "Processed deposit for user {} with amount {} USDC",
@@ -239,32 +229,46 @@ impl Contract {
     #[payable]
     pub fn withdraw_underlying_assets(&mut self, amounts: HashMap<String, U128>) -> Vec<Promise> {
         let sender_id = env::predecessor_account_id();
-        assert!(
-            self.user_balances.contains_key(&sender_id),
-            "No balance found for user"
-        );
-        
+        let user_balances = self.user_balances.get(&sender_id)
+            .expect("No balance found for user");
+
+        let mut promises = Vec::new();
         let gas_per_promise = Gas::from_tgas(10);
-        
-        self.assets
-            .iter()
-            .filter_map(|asset| {
-                amounts.get(&asset.name).map(|amount| {
-                    Promise::new(asset.contract_address.clone())
-                        .function_call(
-                            "ft_transfer".to_string(),
-                            format!(
-                                r#"{{"receiver_id": "{}", "amount": "{}"}}"#,
-                                sender_id.clone(),
-                                amount.0
+
+        for asset in &self.assets {
+            if let Some(amount) = amounts.get(&asset.contract_address) {
+                let current_balance = user_balances.get(&asset.contract_address)
+                    .expect("No balance found for this asset");
+                assert!(current_balance.0 >= amount.0, "Insufficient balance");
+
+                if let Some(&near_address) = TOKEN_ADDRESSES.get(asset.contract_address.to_lowercase().as_str()) {
+                    promises.push(
+                        Promise::new(near_address.parse().unwrap())
+                            .function_call(
+                                "ft_transfer".to_string(),
+                                format!(
+                                    r#"{{"receiver_id": "{}", "amount": "{}"}}"#,
+                                    sender_id.clone(),
+                                    amount.0
+                                )
+                                .into_bytes(),
+                                NearToken::from_yoctonear(1),
+                                gas_per_promise
                             )
-                            .into_bytes(),
-                            NearToken::from_yoctonear(1),
-                            gas_per_promise
-                        )
-                })
-            })
-            .collect()
+                    );
+                }
+            }
+        }
+
+        if let Some(user_balances) = self.user_balances.get_mut(&sender_id) {
+            for (token_address, amount) in amounts {
+                if let Some(balance) = user_balances.get_mut(&token_address) {
+                    balance.0 -= amount.0;
+                }
+            }
+        }
+
+        promises
     }
 }
 
@@ -314,17 +318,22 @@ mod tests {
         let assets = vec![
             AssetInfo {
                 name: "ETH".to_string(),
-                contract_address: accounts(2),
+                contract_address: "0x2e5221B0f855Be4ea5Cefffb8311EED0563B6e87".to_string(),
                 weight: 70,
             },
             AssetInfo {
-                name: "BTC".to_string(),
-                contract_address: accounts(3),
+                name: "AURORA".to_string(),
+                contract_address: "0xe09D8aDae1141181f4CddddeF97E4Cf68f5436E6".to_string(),
                 weight: 30,
             },
         ];
 
-        let contract = Contract::new(accounts(1), assets.clone(), accounts(4));
+        let contract = Contract::new(
+            accounts(1),
+            assets.clone(),
+            "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse().unwrap(),
+        );
+        
         assert_eq!(contract.get_number_of_assets(), 2);
         assert_eq!(contract.get_assets(), assets);
     }

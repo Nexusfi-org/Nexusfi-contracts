@@ -7,10 +7,20 @@ use near_sdk::{
     PublicKey,
 };
 use schemars::JsonSchema;
+use std::collections::HashMap;
+use once_cell::sync::Lazy;
 
 const TGAS: Gas = Gas::from_tgas(1);
 const NO_DEPOSIT: NearToken = NearToken::from_near(0);
 const DEFAULT_TOKEN_WASM: &[u8] = include_bytes!("./token/token.wasm");
+
+pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert("0xe09D8aDae1141181f4CddddeF97E4Cf68f5436E6", "aurora.fakes.testnet");
+    m.insert("0x2e5221B0f855Be4ea5Cefffb8311EED0563B6e87", "weth.fakes.testnet");
+    m.insert("0xf08a50178dfcde18524640ea6618a1f965821715", "usdc.fakes.testnet");
+    m
+});
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -18,7 +28,6 @@ pub struct U128Json {
     value: u128,
 }
 
-// Conversion implementations
 impl From<U128> for U128Json {
     fn from(u128_value: U128) -> Self {
         Self {
@@ -94,40 +103,35 @@ impl IndexFundFactory {
         metadata: FundMetadata,
         public_key: Option<PublicKey>,
     ) -> Promise {
-        // Validate total weight is 100%
         let total_weight: u8 = metadata.assets.iter().map(|a| a.weight).sum();
         assert_eq!(total_weight, 100, "Total weight must be 100%");
 
-        // Generate unique subaccount name
         let subaccount_id = format!("{}.{}", prefix, env::current_account_id());
         let subaccount = subaccount_id.parse::<AccountId>().unwrap();
 
-        // Prepare init arguments for the token contract
         let init_args = near_sdk::serde_json::to_vec(&(
-            env::predecessor_account_id(), // owner_id
-            metadata.assets.clone(),       // assets
+            env::predecessor_account_id(),
+            metadata.assets.clone(),
+            "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(),
         )).expect("Failed to serialize init args");
 
         let deposit = env::attached_deposit();
         
-        // Deploy the fund token contract
         let mut promise = Promise::new(subaccount.clone())
             .create_account()
             .transfer(deposit)
             .deploy_contract(DEFAULT_TOKEN_WASM.to_vec())
             .function_call(
-                "new".to_owned(),
+                "new".to_string(),
                 init_args,
                 NO_DEPOSIT,
                 Gas::from_tgas(50),
             );
 
-        // Add full access key if provided
         if let Some(pk) = public_key {
             promise = promise.add_full_access_key(pk);
         }
 
-        // Add callback
         promise.then(
             Self::ext(env::current_account_id())
                 .with_static_gas(Gas::from_tgas(10))
@@ -157,7 +161,6 @@ impl IndexFundFactory {
 
             self.funds.insert(prefix.clone(), fund);
             log!("Successfully created fund at {}", token_address);
-
             true
         } else {
             log!("Failed to create fund. Refunding attached deposit.");
@@ -181,18 +184,5 @@ impl IndexFundFactory {
             .iter()
             .map(|key| ((*key).clone(), self.funds.get(*key).unwrap().clone()))
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use near_sdk::test_utils::{accounts, VMContextBuilder};
-    use near_sdk::testing_env;
-
-    fn get_context(predecessor: AccountId) -> VMContextBuilder {
-        let mut builder = VMContextBuilder::new();
-        builder.predecessor_account_id(predecessor);
-        builder
     }
 }
