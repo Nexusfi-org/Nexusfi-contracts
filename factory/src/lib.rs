@@ -81,7 +81,7 @@ pub struct IndexFundFactory {
 #[near_bindgen]
 impl IndexFundFactory {
     #[init]
-    pub fn new( -> Self {
+    pub fn new() -> Self {
         Self {
             funds: IterableMap::new(b"f"),
         }
