@@ -3381,6 +3381,7 @@ dependencies = [
  "near-sdk",
  "near-workspaces",
  "once_cell",
+ "serde",
  "serde_json",
  "tokio",
 ]

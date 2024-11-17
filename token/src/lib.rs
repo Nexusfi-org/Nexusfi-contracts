@@ -24,6 +24,17 @@ pub static TOKEN_ADDRESSES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     m
 });
 
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct NetworkDetails {
+    pub chain_id: u64,
+    pub eth_nonce: u64,
+    pub max_priority_fee_per_gas: u64,
+    pub max_fee_per_gas: u64,
+    pub gas_limit: u64,
+}
+
+
 #[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct AssetInfo {
