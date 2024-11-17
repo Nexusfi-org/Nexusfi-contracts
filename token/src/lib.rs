@@ -130,8 +130,8 @@ impl Contract {
             assets,
             owner_id,
             user_balances: HashMap::new(),
-            usdc_contract,
-            oracle_contract,
+            usdc_contract: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(),
+            oracle_contract: "priceoracle.testnet".parse::<AccountId>().unwrap(),
             latest_signed_txs: Vec::new(),
         }
     }
