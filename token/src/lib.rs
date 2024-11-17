@@ -79,7 +79,7 @@ pub struct Contract {
 #[near_bindgen]
 impl Contract {
     #[init]
-    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>, usdc_contract: AccountId) -> Self {
+    pub fn new(owner_id: AccountId, assets: Vec<AssetInfo>) -> Self {
         assert!(!env::state_exists(), "Contract is already initialized");
         let total_weight: u8 = assets.iter().map(|a| a.weight).sum();
         assert_eq!(total_weight, 100, "Total weight of assets must equal 100%");
@@ -89,7 +89,7 @@ impl Contract {
             assets,
             owner_id,
             user_balances: HashMap::new(),
-            usdc_contract,
+            usdc_contract: "3e2210e1184b45b64c8a434c0a7e7b23cc04ea7eb7a6c3c32520d03d4afcb8af".parse::<AccountId>().unwrap(),
             oracle_contract: "priceoracle.testnet".parse().unwrap(),
         }
     }
