@@ -3,11 +3,12 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{
-    env, near_bindgen, private, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
+    env, near_bindgen, AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseError,
     PromiseOrValue,
 };
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use crate::signer::mpc;
 
 mod models;
 mod signer;
@@ -18,7 +19,7 @@ use omni_transaction::evm::types::Signature as OmniSignature;
 use omni_transaction::evm::utils::parse_eth_address;
 use omni_transaction::transaction_builder::{TransactionBuilder, TxBuilder};
 use omni_transaction::types::EVM;
-use signer::{mpc, SignRequest, SignResult};
+use signer::{ SignResult, SignRequest };
 
 // Constants
 const MPC_CONTRACT_ACCOUNT_ID: &str = "v1.signer-prod.testnet";
@@ -163,7 +164,6 @@ impl Contract {
             )
     }
 
-    #[private]
     pub fn get_prices_callback(
         &self,
         #[callback_result] call_result: Result<OraclePriceData, PromiseError>,
@@ -206,7 +206,6 @@ impl Contract {
         )
     }
 
-    #[private]
     pub fn get_single_price_callback(
         &self,
         asset_address: String,
@@ -234,7 +233,6 @@ impl Contract {
         )
     }
 
-    #[private]
     pub fn calculate_portfolio_value_callback(
         &self,
         balances: HashMap<String, U128>,
@@ -266,80 +264,53 @@ impl Contract {
     #[payable]
     pub fn withdraw_underlying_assets(&mut self, request: WithdrawRequest) -> Promise {
         let sender_id = env::predecessor_account_id();
+
+        // Clone balances to avoid borrowing issues
         let balances = self
             .user_balances
             .get(&sender_id)
             .expect("No balance found for user")
-            .clone(); // Clone the balances to avoid borrow issues
+            .clone();
 
-        let mut promises = Vec::new();
-
-        for asset in &self.assets {
-            if let Some(balance) = balances.get(&asset.contract_address) {
-                if balance.0 > 0 {
+        // Collect the required data into a temporary vector
+        let withdrawals: Vec<_> = self
+            .assets
+            .iter()
+            .filter_map(|asset| {
+                balances.get(&asset.contract_address).map(|balance| {
                     let destination = if asset.name == "ETH" {
                         request.eth_destination.clone()
                     } else {
                         request.aurora_destination.clone()
                     };
+                    (asset.contract_address.clone(), destination, balance.0)
+                })
+            })
+            .collect();
 
-                    let promise = self.create_and_sign_withdrawal(
-                        asset.contract_address.clone(),
-                        destination,
-                        balance.0,
-                        request.network_details.clone(),
-                        if asset.name == "ETH" {
-                            ETH_TREASURY_PATH
-                        } else {
-                            AURORA_TREASURY_PATH
-                        },
-                    );
-                    promises.push(promise);
-                }
-            }
-        }
+        // Create promises
+        let promises: Vec<Promise> = withdrawals
+            .into_iter()
+            .map(|(contract_address, destination, amount)| {
+                self.create_and_sign_withdrawal(
+                    &contract_address, // Pass as &str
+                    destination,
+                    amount,
+                    request.network_details.clone(),
+                    if contract_address == ETH_TREASURY_PATH {
+                        ETH_TREASURY_PATH
+                    } else {
+                        AURORA_TREASURY_PATH
+                    },
+                )
+            })
+            .collect();
 
-        // Clear balances after creating all promises
-        if let Some(user_balances) = self.user_balances.get_mut(&sender_id) {
-            for (_, balance) in user_balances.iter_mut() {
-                *balance = U128(0);
-            }
-        }
-
-        // Join all promises
-        Promise::join_all(promises)
-    }
-
-    #[private]
-    fn create_and_sign_withdrawal(
-        &mut self,
-        token_address: String,
-        recipient: String,
-        amount: u128,
-        network_details: NetworkDetails,
-        treasury_path: &str,
-    ) -> Promise {
-        let omni_tx =
-            self.construct_erc20_transfer_tx(token_address, recipient, amount, network_details);
-
-        let encoded_tx = omni_tx.build_for_signing();
-        let tx_hash = env::keccak256(&encoded_tx);
-
-        let sign_request = SignRequest {
-            payload: tx_hash.to_vec(),
-            path: treasury_path.to_string(),
-            key_version: 0,
-        };
-
-        mpc::ext(MPC_CONTRACT_ACCOUNT_ID.parse().unwrap())
-            .with_static_gas(Gas::from_tgas(100))
-            .with_attached_deposit(NearToken::from_yoctonear(200000000000000000000000))
-            .sign(sign_request)
-            .then(
-                Self::ext(env::current_account_id())
-                    .with_static_gas(Gas::from_tgas(5))
-                    .sign_callback(EVMTransactionWrapper::from_evm_transaction(&omni_tx)),
-            )
+        // Combine promises
+        promises
+            .into_iter()
+            .reduce(|acc, promise| acc.and(promise))
+            .unwrap_or_else(|| Promise::new(env::current_account_id()))
     }
 
     fn construct_erc20_transfer_tx(
@@ -376,7 +347,6 @@ impl Contract {
         data
     }
 
-    #[private]
     pub fn sign_callback(
         &mut self,
         evm_tx_wrapper: EVMTransactionWrapper,
@@ -401,6 +371,42 @@ impl Contract {
         signed_tx
     }
 
+    fn create_and_sign_withdrawal(
+        &mut self,
+        token_address: &str,
+        recipient: String,
+        amount: u128,
+        network_details: NetworkDetails,
+        treasury_path: &str,
+    ) -> Promise {
+        // Use the construct_erc20_transfer_tx method if you want to keep it
+        let omni_tx = self.construct_erc20_transfer_tx(
+            token_address.to_string(),
+            recipient,
+            amount,
+            network_details.clone(),
+        );
+
+        // Rest of the implementation remains the same
+        let encoded_tx = omni_tx.build_for_signing();
+        let tx_hash = env::keccak256(&encoded_tx);
+
+        let sign_request = SignRequest {
+            payload: tx_hash.to_vec(),
+            path: treasury_path.to_string(),
+            key_version: 0,
+        };
+
+        mpc::ext(MPC_CONTRACT_ACCOUNT_ID.parse().unwrap())
+            .with_static_gas(Gas::from_tgas(100))
+            .sign(sign_request)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(Gas::from_tgas(10))
+                    .sign_callback(EVMTransactionWrapper::from_evm_transaction(&omni_tx)),
+            )
+    }
+
     // View functions
     pub fn get_latest_signed_txs(&self) -> Vec<Vec<u8>> {
         self.latest_signed_txs.clone()
@@ -410,7 +416,6 @@ impl Contract {
         self.oracle_contract.clone()
     }
 
-    #[private]
     pub fn process_deposit(&mut self, sender_id: AccountId, amount: U128) {
         let user_balance = self
             .user_balances
@@ -600,19 +605,5 @@ mod tests {
 
         let _portfolio_value = contract.get_portfolio_value(accounts(1));
         // Note: Can't fully test portfolio valuation in unit tests due to cross-contract calls
-    }
-}
-
-impl Default for Contract {
-    fn default() -> Self {
-        Self {
-            total_assets: U128(0),
-            assets: Vec::new(),
-            owner_id: env::current_account_id(),
-            user_balances: HashMap::new(),
-            usdc_contract: "usdc.testnet".parse().unwrap(),
-            oracle_contract: "priceoracle.testnet".parse().unwrap(),
-            latest_signed_txs: Vec::new(),
-        }
     }
 }
